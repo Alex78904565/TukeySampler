@@ -1,0 +1,15 @@
+# Publish only code, README files, and dependencies.
+*
+!*/
+!*.py
+!README.md
+!requirements.txt
+!.gitignore
+
+# Local environments, scratch work, and generated outputs.
+.venv/
+__pycache__/
+.pytest_cache/
+tmp/
+output/
+.git/
