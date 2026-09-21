@@ -23,7 +23,9 @@ This budget concerns the ideal endpoint law, not independence of intermediate
 states or a certificate for numerical implementation error. Trials run serially
 with uncapped retries. The sweep saves completion times and final endpoints.
 
-`benchmark_h` offers a separate geometric budget and per-trial time limits:
+`benchmark_h` preserves the original, older geometric budget for reproducing
+historical experiments, with per-trial time limits. It does not use the
+Payne-Weinberger budget in `demo.py --tv-distance`:
 
 ```sh
 python -m experiments.benchmark_h --plan-only
@@ -60,7 +62,8 @@ The comparison plot reads the two JSON files named in the commands above.
   This illustrates the target distribution rather than running in-and-out.
 - `python -m plotting.plot_pw_density --help` describes how to plot endpoint-sweep
   JSON. It also saves an endpoint NPZ archive; its optional animation accumulates
-  trial endpoints.
+  trial endpoints, not proper steps. Runtime sweeps save static endpoint plots by
+  default. Use trajectory plotting to animate evolution along proper steps.
 - `python -m plotting.plot_final_endpoints archive.npz` draws a static scatter,
   heatmap, and exact target comparison from that endpoint archive.
 - `python -m experiments.compare_h first.json second.json` compares compatible

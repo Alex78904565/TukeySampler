@@ -1,6 +1,7 @@
 """Inscribed-ball warm start, following the ideas in fast-tukey's helpers."""
 
 import math
+from functools import lru_cache
 
 import numpy as np
 from scipy.optimize import linprog
@@ -11,6 +12,9 @@ def enclosing_balls(A, b):
 
     A Chebyshev-center LP finds the inner ball. Coordinate minimum/maximum
     LPs give a bounding box and hence a conservative outer radius.
+    Reuses solved geometry for the 16 most recent constraint sets in this
+    process. Keys use constraint values, so editing A or b triggers a new solve.
+    Returns a copy of the center to protect the cache from caller edits.
     These are floating-point estimates, not certified geometric bounds.
     """
     A, b = np.asarray(A, dtype=float), np.asarray(b, dtype=float)
@@ -23,6 +27,15 @@ def enclosing_balls(A, b):
         raise ValueError("Remove zero-normal constraints before calling enclosing_balls.")
     # Normalize rows so the LP's radius is measured in Euclidean distance.
     A, b = A / norms[:, None], b / norms
+    c, r, R = _solve_enclosing_balls(A.shape, A.tobytes(), b.tobytes())
+    return c.copy(), r, R
+
+
+@lru_cache(maxsize=16)
+def _solve_enclosing_balls(shape, A_bytes, b_bytes):
+    """Solve once per normalized constraint set; immutable bytes form the key."""
+    A = np.frombuffer(A_bytes, dtype=float).reshape(shape)
+    b = np.frombuffer(b_bytes, dtype=float)
     d = A.shape[1]
     result = linprog(
         np.r_[np.zeros(d), -1.0],
@@ -70,3 +83,26 @@ def log_warmness_bound(d, r, R):
     if not 0 < r <= R or not math.isfinite(R):
         raise ValueError("Require finite radii with 0 < r <= R.")
     return d * math.log(R / r)
+
+
+def example_geometry(body, d):
+    """Analytic inner ball, enclosing radius R, and log warmth for examples.
+
+    Warm start = Uniform(inner ball), so M = volume(K)/volume(ball).
+    Geometry is evaluated in the original, unscaled coordinates.
+    The enclosing ball uses the same center as the inner ball.
+    """
+    if d < 1:
+        raise ValueError("d must be positive.")
+    if body == "box":
+        center, r, R, log_volume = [0.0]*d, 1.0, math.sqrt(d), d*math.log(2)
+    elif body == "simplex":
+        r = 1/(d+math.sqrt(d))
+        center, log_volume = [r]*d, -math.lgamma(d+1)
+        # The vertices are 0,e1,...,ed; a convex hull lies in any ball
+        # containing every vertex. These are their distances from (r,...,r).
+        R = max(math.sqrt(d)*r, math.sqrt(1-2*r+d*r*r))
+    else:
+        raise ValueError("Analytic geometry supports box and simplex.")
+    log_ball = d/2*math.log(math.pi) - math.lgamma(d/2+1) + d*math.log(r)
+    return center, r, R, max(0.0, log_volume-log_ball)

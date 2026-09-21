@@ -23,24 +23,5 @@ def required_steps(h, d, D, log_M):
     return math.ceil((12*math.log(20) + log_M) / denominator)
 
 
-def example_geometry(body, d):
-    """Analytic inner ball, enclosing radius D, and log warmth for examples.
-
-    Warm start = Uniform(inner ball), so M = volume(K)/volume(ball).
-    Geometry is evaluated in the original, unscaled coordinates.
-    The enclosing ball uses the same center as the inner ball.
-    """
-    if d < 1:
-        raise ValueError("d must be positive.")
-    if body == "box":
-        center, r, D, log_volume = [0.0]*d, 1.0, math.sqrt(d), d*math.log(2)
-    elif body == "simplex":
-        r = 1/(d+math.sqrt(d))
-        center, log_volume = [r]*d, -math.lgamma(d+1)
-        # The vertices are 0,e1,...,ed; a convex hull lies in any ball
-        # containing every vertex. These are their distances from (r,...,r).
-        D = max(math.sqrt(d)*r, math.sqrt(1-2*r+d*r*r))
-    else:
-        raise ValueError("Analytic geometry supports box and simplex.")
-    log_ball = d/2*math.log(math.pi) - math.lgamma(d/2+1) + d*math.log(r)
-    return center, r, D, max(0.0, log_volume-log_ball)
+# Retained import for existing experiment callers.
+from geometry import example_geometry

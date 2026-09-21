@@ -54,6 +54,43 @@ with `--no-prefetch-out` and `--no-batch-in`. IN batches contain 1, 32, 64, ...
 proposals, up to 1,048,576 rows. The first feasible row is accepted. This matrix
 size cap is separate from the retry cap.
 
+### Choose an endpoint TV target
+
+```sh
+python demo.py --body simplex --dim 10 --h 1e-4 --tv-distance 1e-6 --plan-only
+python demo.py --body simplex --dim 10 --h 1e-4 --tv-distance 1e-6 --save run.npz
+```
+
+`--tv-distance` replaces `--steps`. The first command prints the budget without
+sampling; the second runs it, reporting progress about every five seconds.
+For this example the budget is 72,924 proper transitions.
+
+The calculation combines the chi-squared contraction in [1, Theorem 14],
+`chi_squared(initial) <= M - 1`, `TV <= sqrt(chi_squared)/2`, and the
+Payne-Weinberger inequality `C_PI <= D^2 / pi^2` for a convex body:
+
+```text
+k = ceil((log(M - 1) - 2*log(2*tv_distance)) / log(1 + h*pi^2/D^2))
+```
+
+Here D is the diameter and M is the warmness of the initial distribution.
+Automatic mode supports boxes and standard simplices, using their analytic
+volumes, diameters, and uniform inner-ball starts, with `M = vol(K)/vol(ball)`.
+It requires a ball start and uncapped IN retries, which it selects by default.
+The formula gives zero steps when the initial bound already meets the target.
+Geometry and arithmetic use floating point rather than certified arithmetic.
+
+The target applies to the **final endpoint**, not to the pooled trajectory or
+its plotted density. Burn-in defaults to zero in this mode and only controls
+summaries and plots; it does not add transitions to k. The full path and OUT
+noise are stored in memory, so inspect large budgets with `--plan-only` first.
+Manual step mode keeps its 20,000-step, 2,000-burn-in, 100,000-retry defaults.
+
+For a custom convex body, use `mixing.mixing_steps(h, diameter, log_M, tv_distance)`
+with valid diameter and initial-warmness bounds, then pass the result to
+`in_and_out(..., steps=k, max_attempts=None)`. A fixed initial point is not an
+M-warm start for a continuous uniform target.
+
 ### Shapes and plots
 
 Boxes and standard simplices support arbitrary dimensions. The `polygon`,
@@ -72,6 +109,42 @@ To visualize a saved path:
 ```sh
 python -m plotting.plot_samples run.npz --output evolution.gif --burn-in 0
 ```
+
+### Draw independent endpoints in parallel
+
+```sh
+python batch.py --body simplex --dim 10 --samples 100 --h 1e-4 --tv-distance 1e-6 --workers 4 --plan-only
+python batch.py --body simplex --dim 10 --samples 100 --h 1e-4 --tv-distance 1e-6 --workers 4 --save endpoints.npz
+```
+
+Each sample is the final endpoint of its own chain, with a fresh uniform
+Chebyshev-ball start and a separate NumPy random stream. Geometry is solved once
+in the parent process. `--workers 4` runs up to four chains at once using worker
+processes; `--workers 1` (the default) runs serially. The same seed gives the same
+sample streams and output order regardless of scheduling. Both sampling
+optimizations remain enabled and can be disabled with the usual switches.
+
+Use `--steps 30000` instead of `--tv-distance` for a manual budget. The TV target
+applies to **each endpoint**, not the entire batch. A conservative joint target
+of eta can be obtained by setting the per-endpoint target to eta / samples.
+Automatic budgets use the exact built-in body volume and diameter together with
+the numerical ball actually used for initialization. IN retries default to
+uncapped; retry caps are allowed only in manual mode. Failures stop the batch.
+
+The NPZ contains `samples` with shape `(samples, dim)`, proposal totals per
+endpoint, settings, and total sampling wall time. Full trajectories are not
+saved; chains run in chunks of 1,024 steps to bound per-worker path memory.
+Chunking preserves the transition rule but changes random-number consumption
+relative to `demo.py`. Progress reports completed endpoints, with a heartbeat
+every five seconds while parallel jobs run. More workers use more memory and
+may not help small batches because process startup has a cost.
+
+The API is `batch.sample_endpoints(A, b, samples=100, steps=k, h=h, workers=4)`.
+Place calls inside `if __name__ == '__main__':` in scripts using multiple
+workers, as required by Windows process spawning. This batch mode produces
+independent endpoints; it does not parallelize consecutive steps of one chain
+or parallelize consecutive steps of a chain. DFK in `volume.py` uses this
+independent-endpoint API and supports `--workers` within each phase.
 
 ## Use the Python API
 
@@ -93,6 +166,10 @@ samples = path[2001:]  # Omit x0 and the first 2,000 transitions.
 A has shape `(m, d)` and b has shape `(m,)`. The body must be bounded with
 nonempty interior. The inner-ball start is uniform in an inscribed ball found
 by linear programming; enclosing radii are conservative floating-point estimates.
+Solved geometry is cached for the 16 most recent constraint sets within a Python
+process, including repeated DFK runs. Changing the constraint values triggers a
+new solve. Each warm-start draw uses fresh randomness in the cached ball; only
+the geometry is reused. Separate command-line processes have separate caches.
 
 `path` contains `steps + 1` states, including x0. `attempts` counts IN proposals
 through each first success, excluding surplus rows generated by batching.
@@ -101,34 +178,95 @@ Optional `diagnostics` records the actual number of generated IN vectors.
 
 ## Estimate volume
 
-`volume.py` implements the Dyer-Frieze-Kannan (DFK) expanding-ball estimator [2].
-It samples progressively larger ball-polytope intersections, estimates their
-volume ratios, and combines them with the known inner-ball volume.
+`volume.py` follows the expanding-body estimator in Lee and Vempala [2,
+Algorithm 35]. Every phase draws **independent chain endpoints**, with a fresh
+uniform inscribed-ball start and fresh random stream for each endpoint. Different
+phases also use separate streams. Previous endpoints are not reused, and no
+thinned trajectory is treated as an independent sample collection.
 
 ```sh
-python volume.py --body box --dim 2 --repeats 3 --output volume_box.json
-python volume.py --body simplex --dim 10 --h 1e-4 --samples 2000 --burn-in 5000 --thin 20 --plan-only
+python volume.py --body simplex --dim 10 --h 1e-4 --relative-error .1 --failure-probability .25 --workers 4 --plan-only
+python volume.py --body box --dim 2 --relative-error .5 --workers 4 --output volume_box.json
 ```
 
-Remove `--plan-only` to sample. `--samples` is the number of retained iterates
-per phase, `--burn-in` applies at every phase, and `--thin` is the number of
-proper transitions between retained points. Each phase uses
-`burn_in + samples * thin` transitions. `--output` saves settings, phase ratios,
-and timings. Custom bodies can use `volume.estimate_volume(A, b, ...)`.
+Inspect `--plan-only` first: sufficient theoretical budgets can be very large.
+The first command only prints the plan. `--relative-error epsilon` targets the
+interval `[V/(1+epsilon), (1+epsilon)*V]`. The failure probability includes both
+finite-sample noise and approximate-uniform sampling error. `--workers` runs
+independent chains in parallel within each phase; phase execution order does
+not create dependence because the starts and parameters do not use earlier data.
+`--repeats` runs separate complete estimates. Geometry is cached, not sampled anew.
 
-The volume budgets are experimental. The code does not calculate sample counts
-from a requested accuracy or certify relative error. Thinning does not establish
-independence, and phase estimates can be correlated. A zero-overlap estimate or
-exhausted retry cap stops the run.
+### DFK budgets and their assumptions
+
+Let `m = ceil(d*log2(R/r))`, and `K_i = K intersect B(c,r*2**(i/d))`.
+The overlap `p_i = vol(K_i)/vol(K_(i+1))` is at least 1/2 by convexity.
+Algorithm 35 estimates each ratio by the fraction of endpoints in the smaller
+body, then returns the known initial-ball volume divided by their product.
+A zero product is a failed estimate, never silently replaced or retried.
+
+The independent, exactly uniform reference experiment in [2, Lemmas 11.4–11.6]
+has relative product variance at most `(1+1/N)**m - 1`. For final volume
+factor `1+epsilon`, use product tolerance `a = epsilon/(1+epsilon)` to handle
+the reciprocal. The implemented sufficient sample count solves Chebyshev's
+inequality without the asymptotic notation in Theorem 11.7:
+
+```text
+statistical_budget = failure_probability / 2
+sampling_budget = failure_probability / 2
+a = epsilon / (1 + epsilon)
+N = ceil(1 / expm1(log1p(statistical_budget * a*a) / m))
+endpoint_tv = sampling_budget / (m*N)
+```
+
+The remaining sampling error is explicit: independent approximate endpoints
+have joint TV at most the sum of their individual TV errors, at most
+`m*N*endpoint_tv`. Thus ideal-estimator failure plus sampling error is at most
+the requested failure probability. This extra error allocation is our stated
+implementation of approximate sampling, not a constant quoted from Theorem 11.7.
+For `m=0` the known ball volume is returned without sampling.
+
+Each endpoint starts independently in the original ball `B(c,r)`. At a phase
+with outer radius `s`, use `log(M) <= d*log(min(s,R)/r)` and diameter bound
+`D <= 2*min(s,R)` in `mixing_steps`. The warmness is **not** assumed to be two:
+that would require a uniform start from the preceding body, which we do not
+have for these independent starts. Default retries are uncapped. The bound
+assumes valid geometry, exact arithmetic, and ideal independent randomness;
+LP solutions, membership tests, Gaussian draws, and budgets use floating point
+and pseudorandom generators. This is not an interval-arithmetic certification.
+
+### Explicit experimental budgets
+
+For small performance trials or weaker accuracy experiments:
+
+```sh
+python volume.py --body box --dim 2 --experimental --samples 100 --steps 100 --workers 4 --output volume_pilot.json
+python volume.py --body box --dim 2 --experimental --samples 100 --tv-distance .1 --h .01 --plan-only
+```
+
+These still use independent chains, but make **no volume-error guarantee**.
+Without `--experimental`, an insufficient `--samples`, `--steps`, or
+`--tv-distance` override is rejected, as is any finite retry cap. The former
+`--burn-in` and `--thin` volume options are removed rather than reinterpreted.
+Old DFK output files came from correlated trajectories and cannot be relabeled
+as results of this implementation; rerun them for an independent-sample study.
+
+`volume.estimate_volume(A, b, ...)` exposes the same settings. JSON includes the
+algorithm version, phase budgets, overlaps, proposal counts, settings, timing,
+and any failure. Saved observations and theoretical guarantees are separate.
+See [the implementation audit](audit/README.md) for source locations, the
+corrections, and remaining limitations.
 
 ## Project layout
 
 | Location | Purpose |
 | --- | --- |
 | `sampler.py` | In-and-out transitions, batching, and rejection accounting |
+| `mixing.py` | Sufficient endpoint step budget from TV, diameter, and warmness |
 | `geometry.py` | Ball geometry and warm-start sampling |
 | `shapes.py` | Polygon construction and exact polygon moments |
 | `demo.py` | Sampling command-line interface and built-in bodies |
+| `batch.py` | Independent endpoint batches with optional worker processes |
 | `volume.py` | Volume estimator and command-line interface |
 | `plotting/` | Density calculations, target comparisons, and plotting helpers |
 | `experiments/` | Mixing-budget runners and performance experiments |
@@ -149,9 +287,17 @@ saved experiments require their input data to be generated first.
 
 [1] Yunbum Kook, Santosh S. Vempala, and Matthew S. Zhang,
 *In-and-Out: Algorithmic Diffusion for Sampling Convex Bodies*,
-[arXiv:2405.01425](https://arxiv.org/abs/2405.01425). The sampler follows Algorithm 1.
+[arXiv:2405.01425v4](https://arxiv.org/abs/2405.01425v4). Algorithm 1 specifies
+the transitions; Theorem 14 bounds the uncapped-chain chi-squared divergence.
 
 [2] Yin Tat Lee and Santosh S. Vempala, *Techniques in Optimization and Sampling*,
-draft dated August 7, 2026, Section 11.1, Algorithm 35, printed page 179.
+draft dated August 7, 2026, Section 11.1, Algorithm 35 and Lemmas 11.4–11.6
+(printed page 179), Theorem 11.7 (printed page 180).
 This is the DFK expanding-ball algorithm used by `volume.py`. The draft is a
 local research reference and is not bundled with the repository.
+
+[3] L. Esposito, C. Nitsch, and C. Trombetti, *Best constants in Poincare
+inequalities for convex domains*, [arXiv:1110.2960v1](https://arxiv.org/abs/1110.2960v1),
+Theorem 1.1 with p=2. In the variance convention of [1, Definition 9], this
+implies `C_PI <= diameter**2/pi**2`. The simplex's diameter squared is 2;
+`2/pi**2` is its geometry-specific bound, not a universal constant.

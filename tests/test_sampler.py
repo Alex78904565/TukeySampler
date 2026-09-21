@@ -1,6 +1,8 @@
 """Run with: python -m unittest -v. Only standard-library unittest is needed."""
 
 import unittest
+from unittest.mock import patch
+import geometry
 
 import numpy as np
 
@@ -73,6 +75,28 @@ class SamplerTests(unittest.TestCase):
             args.update(changes)
             with self.assertRaises(ValueError):
                 in_and_out(**args)
+
+    def test_geometry_reused_and_safe_against_mutation(self):
+        geometry._solve_enclosing_balls.cache_clear()
+        self.addCleanup(geometry._solve_enclosing_balls.cache_clear)
+        A = np.vstack((np.eye(2), -np.eye(2)))
+        b = np.ones(4)
+        with patch('geometry.linprog', wraps=geometry.linprog) as solve:
+            center, radius, outer = enclosing_balls(A, b)
+            self.assertEqual(solve.call_count, 5)  # Inner ball + four coordinate bounds.
+            center[:] = 100
+            reused, r, R = enclosing_balls(A.copy(), b.copy())
+            self.assertEqual(solve.call_count, 5)
+            np.testing.assert_allclose(reused, [0, 0])
+            self.assertEqual((r, R), (radius, outer))
+            b *= 2  # In-place edits must not reuse the old geometry.
+            _, enlarged, _ = enclosing_balls(A, b)
+            self.assertEqual(solve.call_count, 10)
+            self.assertAlmostEqual(enlarged, 2*radius)
+            A *= 2
+            _, restored, _ = enclosing_balls(A, b)
+            self.assertAlmostEqual(restored, radius)
+            self.assertEqual(solve.call_count, 10)  # Normalizes to the original body.
 
     def test_geometry_and_uniform_ball(self):
         # Shifted rectangle exercises unrestricted LP variables and unequal scales.

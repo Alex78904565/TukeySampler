@@ -10,7 +10,8 @@ import numpy as np
 
 from experiments.benchmark_h import timed_run
 from demo import example_body
-from experiments.mixing import example_geometry
+from geometry import example_geometry
+from mixing import mixing_steps
 from sampler import add_optimization_arguments, optimization_options
 
 
@@ -65,8 +66,7 @@ def main():
     hs = sorted(set(args.h_values))
     center, radius, D, log_M = example_geometry('simplex', 10)
     C_P = 2/math.pi**2
-    numerator = log_M + math.log1p(-math.exp(-log_M)) - math.log(4) - 2*math.log(1e-6)
-    plan = {h: math.ceil(numerator/math.log1p(h/C_P)) for h in hs}
+    plan = {h: mixing_steps(h, math.sqrt(2), log_M, 1e-6) for h in hs}
     A, b, _, _ = example_body('simplex', 10)
     prefix = Path(args.output)
     prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -121,7 +121,7 @@ def main():
             Path(str(prefix)+'.json').write_text(json.dumps(record, indent=2))
     print(json.dumps(record['summary'], indent=2), flush=True)
     from plotting.plot_pw_density import plot_density
-    plot_density(record, prefix, animate=True)
+    plot_density(record, prefix, animate=False)
 
 
 if __name__ == '__main__':

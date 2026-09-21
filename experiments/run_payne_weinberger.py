@@ -14,8 +14,8 @@ from time import perf_counter, process_time
 import numpy as np
 
 from demo import example_body
-from geometry import uniform_ball
-from experiments.mixing import example_geometry
+from geometry import uniform_ball, example_geometry
+from mixing import mixing_steps
 from sampler import in_and_out, add_optimization_arguments, optimization_options
 
 
@@ -34,10 +34,7 @@ def main():
     center, radius, enclosing_radius, log_M = example_geometry('simplex', d)
     diameter_squared = 2.0  # Largest vertex separation: ||e_i-e_j||^2.
     C_P = diameter_squared / math.pi**2
-    # chi^2(initial || uniform) = M-1 for a uniform inner-ball start.
-    log_chi2 = log_M + math.log1p(-math.exp(-log_M))
-    numerator = log_chi2 - math.log(4) - 2*math.log(epsilon)
-    steps = math.ceil(numerator / math.log1p(args.h/C_P))
+    steps = mixing_steps(args.h, math.sqrt(diameter_squared), log_M, epsilon)
     prefix = Path(args.output)
     prefix.parent.mkdir(parents=True, exist_ok=True)
     metadata = dict(body='simplex', dimension=d, h=args.h, seed=args.seed,
